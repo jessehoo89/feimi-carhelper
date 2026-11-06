@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.feimi.car"
+    android:versionCode="11"
+    android:versionName="2.0.0">
+
+    <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="30" />
+
+    <!-- 悬浮球：非 Activity 图层，才能在"别的 App 前台"时发起搬屏 -->
+    <!-- 手机上传安装：本地 HTTP 服务 + PackageInstaller 会话 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- 音乐接入默认常驻：开机自动拉起音源代理 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- 音源代理：注册进车机媒体中心 -->
+    <uses-permission android:name="ecarx.oem.permission.OPENAPI_MEDIACENTER_PERMISSION" />
+
+    <!-- Android 11+ 包可见性：不声明的话 getLaunchIntentForPackage / getApplicationInfo
+         对目标 App 返回 null，卡片右上角会打开我们自己的界面，图标也取不到 -->
+    <queries>
+        <package android:name="cn.toside.music.mobile" />
+        <package android:name="com.sumsg.musichub" />
+        <package android:name="com.feimi.srchost" />
+        <!-- 目标 App 选择器要能列出所有可启动应用 -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- 选择器优先只列"音频类"应用（APP_MUSIC），不把场景/模式类系统应用混进来 -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.APP_MUSIC" />
+        </intent>
+    </queries>
+
+    <application
+        android:label="飞谧车机助手"
+        android:icon="@drawable/ic_app"
+        android:roundIcon="@drawable/ic_app"
+        android:allowBackup="false">
+        <activity
+            android:name="com.feimi.car.MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.NoActionBar"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 导出以便手机端装机工具用 adb 直接拉起：am start-foreground-service ... -->
+        <service
+            android:name="com.feimi.car.FullscreenService"
+            android:exported="true" />
+
+        <!-- 音源代理前台服务（导出：便于 adb 直接拉起做验证） -->
+        <!-- 方向盘/硬件媒体键兜底：媒体中心 UI 的播放键走 MusicClient，
+             方向盘中间键走系统媒体键，暂停后再按不会回到 MediaClient，只能自己接。 -->
+        <!-- 车机"恢复上次音源"：可能是广播，也可能是 startService，两种都接 -->
+        <receiver
+            android:name="com.feimi.car.proxy.RecoverReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.feimi.car.proxy.RECOVER" />
+                <action android:name="com.feimi.car.proxy.PLAY" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 开机自启：音乐接入默认常驻（用户手动关掉后不再拉起） -->
+        <receiver
+            android:name="com.feimi.car.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name="com.feimi.car.proxy.MediaKeyReceiver"
+            android:exported="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name="com.feimi.car.proxy.ProxyService"
+            android:exported="true" />
+
+        <!-- 通知监听：没有它就拿不到落雪的 MediaSession（落雪无 MediaBrowserService） -->
+        <service
+            android:name="com.feimi.car.proxy.SessionWatcher"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

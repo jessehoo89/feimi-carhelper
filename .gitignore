@@ -1,0 +1,24 @@
+# 构建工具链（体积大，不入库）
+build/sdk/
+build/out/
+build/stage/
+build/work/
+build/keystore/
+
+# 构建产物
+*.apk
+*.hap
+*.idsig
+
+# 联测产物
+tests/out/
+tests/keys.txt
+tests/*_keys.txt
+tests/*.log
+
+# 本地备份 / 内部调试与交接记录（不对外）
+*.bak-*
+docs/p0-result-*.md
+docs/*handoff*.md
+tests/p0_probe.sh
+srchost/

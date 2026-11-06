@@ -1,0 +1,105 @@
+name: build-apk
+
+# 本仓库只提供源代码，不提供预编译安装包。
+# 想要成品：fork → Actions → 手动 Run workflow → 下载 Artifacts。
+# 不需要配置任何 secret；编译不依赖任何第三方库或预编译组件。
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # build-tools_r34-linux 的 aapt2 依赖 glibc >= 2.36，固定 24.04 避免 latest 漂移
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+
+      - name: 安装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 缓存 Android 命令行组件
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/sdk/build-tools
+            build/sdk/platform-34
+          key: android-cmdline-r34-${{ runner.os }}
+
+      - name: 准备 Android 命令行组件
+        run: |
+          set -eu
+          BT=build/sdk/build-tools
+          PL=build/sdk/platform-34
+          if [ -x "$BT/aapt2" ] && [ -f "$PL/android.jar" ]; then
+            echo "构建组件已就绪（缓存命中），跳过下载"
+            exit 0
+          fi
+          mkdir -p build/sdk && cd build/sdk
+          curl -fsSLO https://mirrors.cloud.tencent.com/AndroidSDK/build-tools_r34-linux.zip
+          curl -fsSLO https://mirrors.cloud.tencent.com/AndroidSDK/platform-34-ext7_r02.zip
+          unzip -q build-tools_r34-linux.zip && rm -rf build-tools && mv android-14 build-tools
+          unzip -q platform-34-ext7_r02.zip && rm -rf platform-34 && mv android-34 platform-34
+          rm -f ./*.zip
+          echo "aapt2 就绪：$("$BT"/aapt2 version 2>&1 | head -1)"
+
+      - name: 还原签名密钥（可选）
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          set -eu
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            mkdir -p build/keystore
+            printf '%s' "$KEYSTORE_B64" | base64 -d > build/keystore/debug.keystore
+            echo "已还原固定签名，多次构建可覆盖升级"
+          else
+            echo "未配置 KEYSTORE_B64：本次将自动生成调试签名，装新包前需先卸载旧包"
+          fi
+
+      - name: 构建（只出手机端交付包）
+        run: |
+          set -eu
+          chmod +x build/build.sh
+          ./build/build.sh all
+
+      - name: 校验产物
+        run: |
+          set -eu
+          APK=build/out/feimi-phone.apk
+          test -f "$APK" || { echo "::error::未产出 $APK"; exit 1; }
+          echo "--- 交付目录内容 ---"
+          ls -l build/out
+          echo "--- 手机端 ---"
+          build/sdk/build-tools/aapt2 dump badging "$APK" | grep -E "^package|^application"
+          unzip -l "$APK" | grep -q 'assets/feimi-car.apk' \
+            || { echo "::error::手机端未内置车机端 APK，不可交付"; exit 1; }
+          unzip -p "$APK" assets/feimi-car.apk > /tmp/car.apk
+          echo "--- 内置车机端 ---"
+          build/sdk/build-tools/aapt2 dump badging /tmp/car.apk | grep -E "^package|^application"
+          echo "--- 车机端 dex 清单（应只有 classes.dex）---"
+          unzip -l /tmp/car.apk | grep -E '\.dex$'
+          if unzip -l /tmp/car.apk | grep -q 'classes2\.dex'; then
+            echo "::error::车机端出现 classes2.dex，说明仍夹带预编译组件"
+            exit 1
+          fi
+          sha256sum "$APK" | tee sha256.txt
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: feimi-phone-apk
+          path: |
+            build/out/feimi-phone.apk
+            sha256.txt
+          if-no-files-found: error
+          retention-days: 14
