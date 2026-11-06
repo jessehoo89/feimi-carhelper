@@ -15,7 +15,8 @@ public final class NativeUplink {
 
     /** 与 ProxyConfig.SOURCE_ONLINE 一致，媒体中心用它区分音源。 */
     private static final int SOURCE = ProxyConfig.SOURCE_ONLINE;
-    private static final String LIST_ID = "feimi-online";
+    /** 当前播放列表 id —— NativeMusicClient 上报「正在播哪个列表」时要用同一个值。 */
+    static final String LIST_ID = "feimi-online";
 
     private static MediaCenterSvcProxy svc;
     private static IBinder token;

@@ -116,9 +116,16 @@ public final class NativeMusicClient {
     private static final int I_GET_PLAYING_MEDIA_LIST_TYPE = 32;
     private static final int I_GET_PLAYER_INTENT = 33;
 
-    /** 3 = PLAYING，2 = PAUSED（与 MediaSession.PlaybackState 保持一致）。 */
-    private static final int STATUS_PAUSED = 2;
-    private static final int STATUS_PLAYING = 3;
+    /**
+     * 播放状态枚举 —— 这是媒体中心自己的取值，**不是** MediaSession.PlaybackState：
+     * PAUSED=0、PLAYING=1、INTERRUPT=2、PREPARE=3。
+     *
+     * 特别容易踩的坑：这里如果按 MediaSession 的 2/3 去填，2 会变成「被中断」、
+     * 3 会变成「准备中」，车机据此认为音源还没准备好 —— 表现就是 HUD 一直显示
+     * 「正在加载歌词」、方向盘与扶手箱的播放键全部失效。
+     */
+    private static final int STATUS_PAUSED = 0;
+    private static final int STATUS_PLAYING = 1;
 
     private static volatile int pullCount;
     private static volatile int cmdCount;
@@ -301,7 +308,7 @@ public final class NativeMusicClient {
                     return true;
                 case I_GET_APP_NAME:
                     reply.writeNoException();
-                    reply.writeString("飞谧车机助手");
+                    reply.writeString(nz(ProxyConfig.targetLabel()));
                     return true;
                 case I_GET_APP_ICON:
                     reply.writeNoException();
@@ -309,17 +316,22 @@ public final class NativeMusicClient {
                     return true;
                 case I_GET_PACKAGE_NAME:
                     reply.writeNoException();
-                    reply.writeString(nz(ProxyConfig.targetPkg()));
+                    reply.writeString(nz(MediaCenterBridge.proxyPkg()));
                     return true;
                 case I_GET_PLAYING_MEDIA_LIST_ID:
                     reply.writeNoException();
-                    reply.writeString("");
+                    // 必须与 updateMediaPlayList 上传的 id 一致，否则服务端定位不到
+                    // 当前播放在哪个列表，就取不到列表项的歌词，HUD 会一直「加载歌词」。
+                    reply.writeString(NativeUplink.LIST_ID);
                     return true;
                 case I_GET_PLAYER_INTENT:
                     reply.writeNoException();
-                    writePending(reply, null);
+                    writePending(reply, NowPlaying.launchIntent);
                     return true;
                 default:
+                    // 车机固件的接口版本可能比我们已知的更新（实测出现过 34/35）。
+                    // 记下来便于适配，避免静默失败看不出原因。
+                    ProxyConfig.log("[nmc] 未知 playback code=" + code);
                     return false;
             }
         }
