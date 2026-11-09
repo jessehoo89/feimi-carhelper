@@ -64,8 +64,31 @@ public class SessionWatcher extends NotificationListenerService {
      */
     private static volatile boolean trackLoadArmed = false;
     private static volatile long trackLoadUntil = 0L;
-    private static final long TRACK_LOAD_MS = 5000L;
+    /** 落雪暂停态切下一首时重建播放器实测要 5 秒以上，窗口要盖得住。 */
+    private static final long TRACK_LOAD_MS = 8000L;
     private static String lastTrackUuid = "";
+    /** 暂停态切歌：等第一次 NONE/BUFFERING 过渡态确认「确实在重建播放器」才乐观置播放态。 */
+    private static volatile boolean expectPlayFromSkip = false;
+
+    /** 是否处于「新曲目加载中」窗口：此间 NONE/BUFFERING 都是过渡，不能据此推暂停态。 */
+    public static boolean inTrackLoadWindow() {
+        return trackLoadArmed && SystemClock.elapsedRealtime() < trackLoadUntil;
+    }
+
+    /** 窗口超时仍未等到明确的 PLAYING / PAUSED 时，按落雪真实状态回滚乐观值。 */
+    private static final Runnable trackLoadExpire = new Runnable() {
+        @Override
+        public void run() {
+            if (!trackLoadArmed) return;
+            trackLoadArmed = false;
+            trackLoadUntil = 0L;
+            expectPlayFromSkip = false;
+            boolean real = isPlaying();
+            NowPlaying.playing = real;
+            MediaCenterBridge.pushState();
+            ProxyConfig.log("[状态] 切歌窗口超时，按真实状态回滚 playing=" + real);
+        }
+    };
 
     // ------------------------------------------------------------------ 生命周期
 
@@ -293,12 +316,24 @@ public class SessionWatcher extends NotificationListenerService {
             // 不是暂停（真正暂停是 STATE_PAUSED，不受影响）。
             String uuid = NowPlaying.uuid();
             if (!uuid.equals(lastTrackUuid)) {
+                boolean firstTrack = lastTrackUuid.length() == 0;
                 lastTrackUuid = uuid;
-                if (NowPlaying.playing) {
+                // 首次绑定或空曲目只是把当前值记下来，不算切歌，别误开窗口。
+                if (!firstTrack && NowPlaying.title.length() > 0) {
                     trackLoadArmed = true;
                     trackLoadUntil = SystemClock.elapsedRealtime() + TRACK_LOAD_MS;
+                    main.removeCallbacks(trackLoadExpire);
+                    main.postDelayed(trackLoadExpire, TRACK_LOAD_MS);
                     ProxyConfig.log("[状态] 新曲目 " + uuid + " → 开启 "
                             + (TRACK_LOAD_MS / 1000) + "s 加载窗口，过渡态不报暂停");
+                    if (!NowPlaying.playing) {
+                        // 暂停态切下一首：落雪会自动起播，但 STATE_PLAYING 回调要等好几秒，
+                        // 期间只报 NONE/BUFFERING。这里先只登记意图，等第一次过渡态到达
+                        // 再乐观置播放态，避免暂停时单纯 metadata 变化被误判成切歌。
+                        expectPlayFromSkip = true;
+                        ControlForwarder.onPaused(); // 撤销可能残留的「等暂停生效」
+                        ProxyConfig.log("[状态] 暂停态切歌 → 等过渡态确认后置播放态");
+                    }
                 }
             }
 
@@ -364,10 +399,24 @@ public class SessionWatcher extends NotificationListenerService {
             long now = SystemClock.elapsedRealtime();
             boolean playing = st == PlaybackState.STATE_PLAYING;
 
+            // 快速「暂停→播放」后落雪会补报一个滞后的旧 PAUSED，如实采信会让图标
+            // 多翻一次。与当前乐观意图相反的明确 PLAYING/PAUSED 回调在短窗口内忽略；
+            // NONE/BUFFERING 仍交给下面的切歌加载窗口处理，ERROR 始终立即采信。
+            // 切歌加载窗口内不启用抑制：暂停态切下一首时落雪会报 PLAYING，
+            // 那是新歌起播而不是「与暂停意图相反的滞后回调」，不能拦。
+            if (!inTrackLoadWindow()
+                    && (playing || st == PlaybackState.STATE_PAUSED)
+                    && ControlForwarder.isStaleState(playing)) {
+                ProxyConfig.log("[状态] 忽略滞后的反向回调 state=" + st);
+                return;
+            }
+
             if (st == PlaybackState.STATE_PAUSED || st == PlaybackState.STATE_ERROR) {
                 // 用户明确暂停 / 播放失败 —— 采信，并关掉加载窗口。
                 trackLoadArmed = false;
                 trackLoadUntil = 0L;
+                expectPlayFromSkip = false;
+                main.removeCallbacks(trackLoadExpire);
                 // 暂停真正落地，撤销 ControlForwarder 的补刀重试。
                 ControlForwarder.onPaused();
             } else if (!playing && trackLoadArmed && now < trackLoadUntil) {
@@ -375,12 +424,21 @@ public class SessionWatcher extends NotificationListenerService {
                 // 保持播放态，只把进度归零（新歌从头开始），避免媒体中心图标闪一下。
                 ProxyConfig.log("[状态] 切歌加载中 state=" + st + " pos=" + s.getPosition()
                         + " → 保持播放态（不推暂停）");
+                if (expectPlayFromSkip) {
+                    // 过渡态证实确实在重建播放器，此刻才把图标切到播放态。
+                    expectPlayFromSkip = false;
+                    NowPlaying.playing = true;
+                    MediaCenterBridge.pushState();
+                    ProxyConfig.log("[状态] 暂停态切歌已确认 → 乐观置播放态");
+                }
                 NowPlaying.positionMs = 0L;
                 MediaCenterBridge.onPositionAnchor(0L, 1f);
                 return;
             } else if (playing) {
                 trackLoadArmed = false;
                 trackLoadUntil = 0L;
+                expectPlayFromSkip = false;
+                main.removeCallbacks(trackLoadExpire);
             }
 
             // 用户刚点了暂停、还没拿到明确 PAUSED 之前，落雪切歌重建播放器会

@@ -89,6 +89,23 @@ public final class ControlForwarder {
         }
     };
 
+    /**
+     * 乐观态保护窗口。
+     *
+     * 落雪（RNTP）在快速「暂停→播放」时会补报一个滞后的 STATE_PAUSED，再报
+     * STATE_PLAYING。如实采信会让媒体中心图标额外翻动一次（PAUSED→PLAYING→PAUSED→PLAYING）。
+     * 动作入口已乐观写好 NowPlaying.playing，这一小段时间内与意图相反的回调一律视为旧状态。
+     */
+    private static final long OPTIMISTIC_MS = 1500L;
+    private static volatile boolean optimisticPlaying = false;
+    private static volatile long optimisticUntil = 0L;
+
+    /** 供 SessionWatcher 判断：这次回调是不是与当前用户意图相反的滞后状态。 */
+    public static boolean isStaleState(boolean reportedPlaying) {
+        return SystemClock.elapsedRealtime() < optimisticUntil
+                && reportedPlaying != optimisticPlaying;
+    }
+
     private ControlForwarder() {
     }
 
@@ -121,6 +138,10 @@ public final class ControlForwarder {
         // pause 由 pausePending + pauseExpire 兜底回滚，play 由 verify() 回灌兜底。
         if ("pause".equals(a)) NowPlaying.playing = false;
         else if ("play".equals(a)) NowPlaying.playing = true;
+        if ("pause".equals(a) || "play".equals(a)) {
+            optimisticPlaying = NowPlaying.playing;
+            optimisticUntil = SystemClock.elapsedRealtime() + OPTIMISTIC_MS;
+        }
         main.post(new Runnable() {
             @Override
             public void run() {

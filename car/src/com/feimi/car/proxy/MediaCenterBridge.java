@@ -421,7 +421,10 @@ public final class MediaCenterBridge {
                     maybeKeepFocus();
                     // 目标 App 退出后 session 会变 NONE：必须立刻停止进度推算，
                     // 否则媒体中心会出现"音乐停了、歌词和进度条还在走"。
-                    if (NowPlaying.playing && SessionWatcher.sessionReallyGone()) {
+                    // 切歌加载窗口里 session 会长时间停在 NONE，这是重建播放器而不是退出，
+                    // 此时推暂停态会让媒体中心图标闪回「播放」再翻回来。
+                    if (NowPlaying.playing && SessionWatcher.sessionReallyGone()
+                            && !SessionWatcher.inTrackLoadWindow()) {
                         ProxyConfig.log("[ticker] 会话已失效，停止推算并推暂停态");
                         NowPlaying.playing = false;
                         pushState();
