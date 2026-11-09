@@ -127,6 +127,9 @@ public final class NativeMusicClient {
     private static final int STATUS_PAUSED = 0;
     private static final int STATUS_PLAYING = 1;
 
+    /** 仅供日志：车机 pull 到的播放态发生变化时打一条，便于量图标刷新延迟。 */
+    private static volatile int lastReportedStatus = -1;
+
     private static volatile int pullCount;
     private static volatile int cmdCount;
     private static volatile String lastCmd = "";
@@ -275,7 +278,13 @@ public final class NativeMusicClient {
                     return true;
                 case I_GET_PLAYBACK_STATUS:
                     reply.writeNoException();
-                    reply.writeInt(NowPlaying.playing ? STATUS_PLAYING : STATUS_PAUSED);
+                    int reported = NowPlaying.playing ? STATUS_PLAYING : STATUS_PAUSED;
+                    if (reported != lastReportedStatus) {
+                        lastReportedStatus = reported;
+                        ProxyConfig.log("[状态上行] getPlaybackStatus → " + reported
+                                + (reported == STATUS_PLAYING ? " (PLAYING)" : " (PAUSED)"));
+                    }
+                    reply.writeInt(reported);
                     return true;
                 case I_GET_LYRIC_CONTENT:
                     reply.writeNoException();

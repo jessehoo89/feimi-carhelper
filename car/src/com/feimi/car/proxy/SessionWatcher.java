@@ -206,17 +206,12 @@ public class SessionWatcher extends NotificationListenerService {
             MediaCenterBridge.onControllerReady(c);
             onMetadata(c.getMetadata());
             onPlaybackState(c.getPlaybackState());
+            // 切歌重建出新 session：如果还有一笔「等生效的暂停」，立刻补发。
+            ControlForwarder.onSessionRebound();
         } catch (Throwable t) {
             ProxyConfig.log("绑定 session 失败: " + t);
         }
     }
-
-    private static final Runnable reacquire = new Runnable() {
-        @Override
-        public void run() {
-            MediaCenterBridge.reacquireFocus();
-        }
-    };
 
     private static final MediaController.Callback callback = new MediaController.Callback() {
         @Override
@@ -373,6 +368,8 @@ public class SessionWatcher extends NotificationListenerService {
                 // 用户明确暂停 / 播放失败 —— 采信，并关掉加载窗口。
                 trackLoadArmed = false;
                 trackLoadUntil = 0L;
+                // 暂停真正落地，撤销 ControlForwarder 的补刀重试。
+                ControlForwarder.onPaused();
             } else if (!playing && trackLoadArmed && now < trackLoadUntil) {
                 // 切歌过渡：NONE(0)/STOPPED(1)/BUFFERING(6) 都不代表暂停。
                 // 保持播放态，只把进度归零（新歌从头开始），避免媒体中心图标闪一下。
@@ -386,7 +383,15 @@ public class SessionWatcher extends NotificationListenerService {
                 trackLoadUntil = 0L;
             }
 
-            NowPlaying.playing = playing;
+            // 用户刚点了暂停、还没拿到明确 PAUSED 之前，落雪切歌重建播放器会
+            // 短暂再报一次 PLAYING。这段时间继续上报暂停态，避免图标翻回播放中；
+            // 同时让 ControlForwarder 立刻补发一次 pause。
+            boolean reportPlaying = playing;
+            if (playing && ControlForwarder.isPausePending()) {
+                reportPlaying = false;
+                ControlForwarder.onSessionRebound();
+            }
+            NowPlaying.playing = reportPlaying;
             NowPlaying.positionMs = s.getPosition();
             MediaCenterBridge.onPositionAnchor(NowPlaying.positionMs,
                     s.getPlaybackSpeed() > 0 ? s.getPlaybackSpeed() : 1f);
@@ -394,20 +399,11 @@ public class SessionWatcher extends NotificationListenerService {
                     + " pos=" + NowPlaying.positionMs + " actions=" + s.getActions());
             MediaCenterBridge.pushState();
 
-            // 暂停后补一次播放焦点，否则车机不再把方向盘中间键派给我们（第二下没反应）。
-            // 但**只在本音源内用户主动按暂停**时才补：
-            // 如果这次暂停是"用户切到 QQ/蓝牙音源"造成的，补焦会把播放焦点抢回落雪，
-            // 之后媒体中心的「下一首」就会派给落雪 —— 实测表现为"在 QQ 里点下一首，
-            // 直接跳回落雪并播落雪的下一首"。
-            if (st == PlaybackState.STATE_PAUSED) {
-                long sincePause = SystemClock.elapsedRealtime() - ControlForwarder.lastPauseAt;
-                if (sincePause >= 0 && sincePause < 2500L) {
-                    main.removeCallbacks(reacquire);
-                    main.postDelayed(reacquire, 800L);
-                } else {
-                    ProxyConfig.log("[焦点] 非用户主动暂停（" + sincePause + "ms 前无 pause 动作），不补焦");
-                }
-            }
+            // 暂停后不再自动 requestPlay 补焦。
+            // 实车验证：暂停后 0.6s（补焦尚未执行）按播放键，车机照样派发 onPlay 并
+            // 成功恢复播放，说明这层补焦在当前固件下已无必要；而它延迟约 1.4~2.3 秒
+            // 才执行，甚至会在用户「暂停→立刻播放」之后额外请求一次播放，把媒体中心
+            // 图标翻回播放中再纠正 —— 正是感官上「图标滞后/反复」的来源。
         } catch (Throwable t) {
             ProxyConfig.log("解析 playbackState 异常: " + t);
         }
